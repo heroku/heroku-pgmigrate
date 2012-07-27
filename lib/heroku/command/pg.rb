@@ -1,269 +1,275 @@
 require "heroku/command/base"
 
-module Heroku::Command
-  class Pg < BaseWithApp
+class Heroku::Command::Pg < Heroku::Command::Base
 
-    # pg:migrate
-    #
-    # Migrate from legacy shared databases to Heroku Postgres Dev
-    def migrate
-      validate_arguments!
+  include Heroku::Helpers
 
-      to_perform = []
-      rollbacks = []
+  # pg:migrate
+  #
+  # Migrate from legacy shared databases to Heroku Postgres Dev
+  def migrate
+    to_perform = []
+    rollbacks = []
 
-      provision_dev = Heroku::PgMigrate::ProvisionDev.new
-      maintainance = Heroku::PgMigrate::Maintenance.new
-      scale_zero = Heroku::PgMigrate::ScaleZero.new
+    maintenance = Heroku::PgMigrate::Maintenance.new(api, app)
+    scale_zero = Heroku::PgMigrate::ScaleZero.new(api, app)
 
-      # In reverse order of performance, as to_perform is a stack.
-      to_perform << scale_zero
-      to_perform << maintenance
-      to_perform << provision_dev
+    # In reverse order of performance, as to_perform is a stack.
+    to_perform << scale_zero
+    to_perform << maintenance
 
-      # Always want to rollback some actions.
-      rollbacks << maintenance
-      rollbacks << scale_zero
+    # Always want to rollback some xacts.
+    rollbacks << maintenance
+    rollbacks << scale_zero
 
-      begin
-        loop do
-          action = to_perform.pop()
-
-          # Finished all actions without a problem
-          break if action.nil?
-
-          begin
-            additional = action.perform!
-          rescue Heroku::PgMigrate::NeedRollback => error
-            rollbacks.push(action)
-            raise
-          end
-
-          to_perform.concat(additional)
-        end
-      rescue
-        # Regardless, rollbacks need a chance to execute
-        process_undo(rollbacks)
-        raise
-      end
-    end
-
-    def self.process_undo(rollbacks)
-      # Process rollbacks,
-      #
-      # Rollbacks are intended to be idempotent (as they may get run
-      # one or more times unless someone completely kills the program)
-      # and we'd *really* prefer them run until they are successful,
-      # no matter what.
+    begin
       loop do
-        action = rollbacks.pop()
-        break if action.nil?
-        begin
-          action.rollback!
-        rescue
-          status($!.to_s)
-          status("Rollback failed: retrying.")
-        end
-      end
-    end
+        xact = to_perform.pop()
 
+        # Finished all xacts without a problem
+        break if xact.nil?
+
+        begin
+          additional = xact.perform!
+        rescue Heroku::PgMigrate::NeedRollback => error
+          rollbacks.push(xact)
+          raise
+        end
+
+        to_perform.concat(additional)
+      end
+    ensure
+      # Regardless, rollbacks need a chance to execute
+      process_rollbacks(rollbacks)
+    end
   end
 
-  module Heroku::PgMigrate
-    module NeedRollback
-    end
+  def process_rollbacks(rollbacks)
+    # Rollbacks are intended to be idempotent (as they may get run
+    # one or more times unless someone completely kills the program)
+    # and we'd *really* prefer them run until they are successful,
+    # no matter what.
+    loop do
+      xact = rollbacks.pop()
+      break if xact.nil?
 
-    class Maintenance
-      def perform!
-        status("Entering maintenance mode on application #{app}.")
-
-        begin
-          api.post_app_maintenance(app, '1')
-        rescue
-          error.extend(NeedRollback)
-          raise
-        end
-
-        return []
-      end
-
-      def rollback!
-        status("Leaving maintenance mode on application #{app}.")
-        api.post_app_maintenance(app, '0')
+      begin
+        xact.rollback!
+      rescue
+        puts $!.to_s
       end
     end
+  end
 
-    class ScaleZero
-      def perform!
-        @old_counts = nil
+end
 
-        # Remember the previous scaling for rollback.  Can fail.
-        @old_counts = process_count(api, app)
+module Heroku::PgMigrate
+end
 
-        begin
-          # Perform the actual de-scaling
-          self.scale_zero api, app, @old_counts.keys
-        rescue StandardError => error
-          # If something goes wrong, signal caller to try to rollback by
-          # tagging the error -- it's presumed one or more processes
-          # have been scaled to zero.
-          error.extend(NeedRollback)
-          raise
-        end
+module Heroku::PgMigrate::NeedRollback
+end
 
-        return []
+class Heroku::PgMigrate::Maintenance
+  include Heroku::Helpers
+
+  def initialize api, app
+    @api = api
+    @app = app
+  end
+
+  def perform!
+    action("Entering maintenance mode on application #{@app}") {
+
+      begin
+        @api.post_app_maintenance(@app, '1')
+      rescue
+        error.extend(NeedRollback)
+        raise
       end
 
-      def rollback!
-        if @old_counts == nil
-          error("Internal error: attempt to restore process scale when " +
-            "process scale-down could not be performed successfully.")
-        end
+      status("success")
+    }
 
-        @old_counts.each { |name, amount|
-          status("Restoring process #{name} scale to #{amount}.")
-          api.post_ps_scale(app, name, amount.to_s).body
-        }
+    return []
+  end
+
+  def rollback!
+    action("Leaving maintenance mode on application #{@app}") {
+      @api.post_app_maintenance(@app, '0')
+      status("success")
+    }
+  end
+end
+
+class Heroku::PgMigrate::ScaleZero
+  include Heroku::Helpers
+
+  def initialize api, app
+    @api = api
+    @app = app
+  end
+
+  def perform!
+    @old_counts = nil
+
+    # Remember the previous scaling for rollback.  Can fail.
+    @old_counts = self.class.process_count(@api, @app)
+
+    begin
+      # Perform the actual de-scaling
+      scale_zero(@old_counts.keys)
+    rescue StandardError => error
+      # If something goes wrong, signal caller to try to rollback by
+      # tagging the error -- it's presumed one or more processes
+      # have been scaled to zero.
+      error.extend(NeedRollback)
+      raise
+    end
+
+    return []
+  end
+
+  def rollback!
+    if @old_counts == nil
+      raise "Internal error: attempt to restore process scale when " +
+        "process scale-down could not be performed successfully."
+    end
+
+    @old_counts.each { |name, amount|
+      action("Restoring process #{name} scale to #{amount}") {
+        @api.post_ps_scale(app, name, amount.to_s).body
+        status('success')
+      }
+    }
+  end
+
+  #
+  # Helper procedures
+  #
+
+  def self.process_count(api, app)
+    # Read an app's process names and compute their quantity.
+
+    processes = api.get_ps(app).body
+
+    old_counts = {}
+    processes.each do |process|
+      name = process["process"].split(".").first
+
+      # Is there a better way to ask the API for how many of each
+      # process type is the target to be run?  Right now, compute it
+      # by parsing the textual lines.
+      if old_counts[name] == nil
+        old_counts[name] = 1
+      else
+        old_counts[name] += 1
       end
     end
+
+    return old_counts
+  end
+
+  def scale_zero names
+    # Scale every process contained in the sequence 'names' to zero.
+    names.each { |name|
+      action("Scaling process ${name} to 0") {
+        @api.post_ps_scale(@app, name, '0')
+        status('success')
+      }
+    }
+
+    nil
+  end
+end
+
+class Heroku::PgMigrate::RebindConfig
+  include Heroku::Helpers
+
+  def initialize api, new
+    @api = api
+    @new = new
+    @old = nil
+    @rebinding = nil
+  end
+
+  def perform!
+    # Save vars in case of rollback scenario.
+    @api.get_config_vars(app).body
+
+    # Find and confirm the SHARED_DATABASE_URL's existence
+    @old = vars['SHARED_DATABASE_URL']
+    if @old == nil
+      raise "No SHARED_DATABASE_URL found: cannot migrate."
+    end
+
+    # Compute all the configuration variables that need rebinding.
+    rebinding = self.class.find_rebindings(vars, @old)
+
+    # Indicate what is about to be done
+    action("Binding new database configuration to: " +
+      "#{self.class.humanize(rebinding)}") {
+
+      # Set up state for rollback
+      @rebinding = rebinding
+
+      begin
+        self.class.rebind(@api, app, rebinding, @new)
+      rescue StandardError => error
+        # If this fails, rollback is necessary
+        error.extend(NeedRollback)
+        raise
+      end
+
+      status('success')
+    }
+
+    return []
+  end
+
+  def rollback!
+    if @rebinding.nil? || @old.nil?
+      # Apparently, perform! never got far enough to bind enough
+      # rollback state.
+      raise "Internal error: rollback performed even though " +
+        "this action should not require undoing."
+
+      action("Binding old database configuration to: " +
+        "#{self.class.humanize(@rebinding)}") {
+        rebind(@api, app, @rebinding, @old)
+        status('success')
+      }
+    end
+
 
     #
     # Helper procedures
     #
 
-    def self.process_count api, app
-      # Read an app's process names and compute their quantity.
-
-      processes = api.get_ps(app).body
-      processes.each do |process|
-        name = process["process"].split(".").first
-
-        # Is there a better way to ask the API for how many of each
-        # process type is the target to be run?  Right now, compute it
-        # by parsing the textual lines.
-        if old_counts[name] == nil
-          old_counts[name] = 1
-        else
-          old_counts[name] += 1
+    def self.find_rebindings(vars, val)
+      # Yield each configuration variable with a given value.
+      rebinding = []
+      vars.each { |name, val|
+        if val == @old
+          rebinding << name
         end
+      }
 
-        return old_counts
-      end
-
-      def self.scale_zero(api, app, names)
-        # Scale every process contained in the sequence 'names' to zero.
-
-        names.each { |name|
-          status("Scaling process ${name} to 0.")
-          api.post_ps_scale(app, name, '0')
-        }
-
-        nil
-      end
+      return rebinding
     end
 
-    class RebindConfig
-      def initialize new
-        @new = new
-        @old = nil
-        @rebinding = nil
-      end
+    def self.rebind(api, app, names, val)
+      # Rebind every configuration in 'names' to 'val'
+      exploded_bindings = {}
+      names.each { |name|
+        exploded_bindings[name] = val
+      }
 
-      def perform!
-        # Save vars in case of rollback scenario.
-        api.get_config_vars(app).body
-
-        # Find and confirm the SHARED_DATABASE_URL's existence
-        @old = vars['SHARED_DATABASE_URL']
-        if @old == nil
-          error("No SHARED_DATABASE_URL found: cannot migrate.")
-        end
-
-        # Compute all the configuration variables that need rebinding.
-        rebinding = find_rebindings(vars, @old)
-
-        # Indicate what is about to be done
-        status("Binding new database configuration to: " +
-          "#{humanize(rebinding)}.")
-
-        # Set up state for rollback
-        @rebinding = rebinding
-
-        begin
-          rebind(api, app, rebinding, @new)
-        rescue StandardError => error
-          # If this fails, rollback is necessary
-          error.extend(NeedRollback)
-          raise
-        end
-
-        return []
-      end
-
-      def rollback!
-        if @rebinding.nil? || @old.nil?
-          # Apparently, perform! never got far enough to bind enough
-          # rollback state.
-          error("Internal error: rollback performed even though " +
-            "this action should not require undoing.")
-        end
-
-        status("Binding old database configuration to: " +
-          "#{humanize(@rebinding)}")
-        rebind(api, app, @rebinding, @old)
-      end
-
-
-      #
-      # Helper procedures
-      #
-
-      def self.find_rebindings(vars, val)
-        # Yield each configuration variable with a given value.
-        rebinding = []
-        vars.each { |name, val|
-          if val == @old
-            rebinding << name
-          end
-        }
-
-        return rebinding
-      end
-
-      def self.rebind(api, app, names, val)
-        # Rebind every configuration in 'names' to 'val'
-        exploded_bindings = {}
-        names.each { |name|
-          exploded_bindings[name] = val
-        }
-
-        api.put_config_vars(app, exploded_bindings)
-      end
-
-      def self.humanize(names)
-        # How a list of rebound configuration names are to be rendered
-        names.join(', ')
-      end
+      api.put_config_vars(app, exploded_bindings)
     end
 
-    class ProvisionDev
-      def perform!
-        dev_plan = nil
-        configure_addon('Adding') do |addon, config|
-          # What does this return? A successful addition should be
-          # able to advertise its name.
-          dev_plan = heroku.install_addon(app, 'heroku-postgresql:dev', config)
-        end
-
-        return [RebindConfig.new(new_dev_url)]
-      end
-
-      def rollback!
-        # There are probably some situations where it is safe to
-        # delete the addon to rollback, but instead it may be better
-        # to just report the name of the extra addon left behind by an
-        # incomplete migrate process.
-      end
+    def self.humanize(names)
+      # How a list of rebound configuration names are to be rendered
+      names.join(', ')
     end
   end
 end
