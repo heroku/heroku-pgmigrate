@@ -34,7 +34,7 @@ module Heroku::Command
 
           begin
             additional = action.perform!
-          rescue Heroku::PgMigrate::NeedsUndoing => error
+          rescue Heroku::PgMigrate::NeedRollback => error
             undoing.push(action)
             raise
           end
@@ -68,7 +68,7 @@ module Heroku::Command
   end
 
   module Heroku::PgMigrate
-    module NeedsUndoing
+    module NeedRollback
     end
 
     class Maintenance
@@ -78,7 +78,7 @@ module Heroku::Command
         begin
           api.post_app_maintenance(app, '1')
         rescue
-          error.extend(NeedsUndoing)
+          error.extend(NeedRollback)
           raise
         end
 
@@ -105,7 +105,7 @@ module Heroku::Command
           # If something goes wrong, signal caller to try to rollback by
           # tagging the error -- it's presumed one or more processes
           # have been scaled to zero.
-          error.extend(NeedsUndoing)
+          error.extend(NeedRollback)
           raise
         end
 
@@ -191,7 +191,7 @@ module Heroku::Command
           rebind(api, app, rebinding, @new)
         rescue StandardError => error
           # If this fails, rollback is necessary
-          error.extend(NeedsUndoing)
+          error.extend(NeedRollback)
           raise
         end
 
