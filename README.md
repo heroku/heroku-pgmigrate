@@ -39,7 +39,7 @@ for reference in case one encounters a problem or wants a position to
 start reading the code.
 
     # Create a Dev plan as a target to do a pgbackups restore into
-     heroku addons:add heroku-postgresql:dev -a <appname>
+    heroku addons:add heroku-postgresql:dev -a <appname>
 
     # Set maintenance mode
     heroku maintenance:on -a <appname>
