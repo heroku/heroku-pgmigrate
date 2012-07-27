@@ -9,25 +9,25 @@ module Heroku::Command
     def migrate
       validate_arguments!
 
-      todo = []
-      undoing = []
+      to_perform = []
+      rollbacks = []
 
       provision_dev = Heroku::PgMigrate::ProvisionDev.new
       maintainance = Heroku::PgMigrate::Maintenance.new
       scale_zero = Heroku::PgMigrate::ScaleZero.new
 
-      # In reverse order of doing, since this is a stack of actions
-      todo << scale_zero
-      todo << maintenance
-      todo << provision_dev
+      # In reverse order of performance, as to_perform is a stack.
+      to_perform << scale_zero
+      to_perform << maintenance
+      to_perform << provision_dev
 
-      # Always want to undo some actions.
-      undoing << maintenance
-      undoing << scale_zero
+      # Always want to rollback some actions.
+      rollbacks << maintenance
+      rollbacks << scale_zero
 
       begin
         loop do
-          action = todo.pop()
+          action = to_perform.pop()
 
           # Finished all actions without a problem
           break if action.nil?
@@ -35,26 +35,28 @@ module Heroku::Command
           begin
             additional = action.perform!
           rescue Heroku::PgMigrate::NeedRollback => error
-            undoing.push(action)
+            rollbacks.push(action)
             raise
           end
 
-          todo.concat(additional)
+          to_perform.concat(additional)
         end
       rescue
         # Regardless, rollbacks need a chance to execute
-        process_undo(undoing)
+        process_undo(rollbacks)
         raise
       end
     end
 
-    def self.process_undo(undoing)
-      # Process rollbacks in 'undoing'
+    def self.process_undo(rollbacks)
+      # Process rollbacks,
       #
-      # Rollbacks are intended to be idempotent and we'd *really*
-      # prefer them run until they are successful, no matter what.
+      # Rollbacks are intended to be idempotent (as they may get run
+      # one or more times unless someone completely kills the program)
+      # and we'd *really* prefer them run until they are successful,
+      # no matter what.
       loop do
-        action = undoing.pop()
+        action = rollbacks.pop()
         break if action.nil?
         begin
           action.rollback!
