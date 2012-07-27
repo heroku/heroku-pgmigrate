@@ -38,28 +38,28 @@ they are nominally carried out entirely automatically.  They are here
 for reference in case one encounters a problem or wants a position to
 start reading the code.
 
-   # Create a Dev plan as a target to do a pgbackups restore into
-    heroku addons:add heroku-postgresql:dev -a <appname>
+    # Create a Dev plan as a target to do a pgbackups restore into
+     heroku addons:add heroku-postgresql:dev -a <appname>
 
-   # Set maintenance mode
-   heroku maintenance:on -a <appname>
+    # Set maintenance mode
+    heroku maintenance:on -a <appname>
 
-   # Scale all processes to zero
-   heroku scale <all-process-types>=0 -a <appname>
+    # Scale all processes to zero
+    heroku scale <all-process-types>=0 -a <appname>
 
-   # Copy the database
-   heroku pgbackups:transfer <SHARED_DATABASE_URL> <DEV_PLAN_URL> -a <appname>
+    # Copy the database
+    heroku pgbackups:transfer <SHARED_DATABASE_URL> <DEV_PLAN_URL> -a <appname>
 
-   # Having confirmed that it succeeds...
-   #  
-   # Rebind all config variables that had the SHARED_DATABASE_URL to
-   # the new DEV_PLAN_URL.  SHARED_DATABASE_URL will also be rebound
-   # to the dev addon.
-   heroku config:add <...> -a <appname>
+    # Having confirmed that it succeeds...
+    #
+    # Rebind all config variables that had the SHARED_DATABASE_URL to
+    # the new DEV_PLAN_URL.  SHARED_DATABASE_URL will also be rebound
+    # to the dev addon.
+    heroku config:add <...> -a <appname>
 
-   # Now that everything is reconfigured, bring the app back up
-   heroku scale <all-process-types>=<original-value> -a <appname>
-   heroku maintenance:off -a <appname>
+    # Now that everything is reconfigured, bring the app back up
+    heroku scale <all-process-types>=<original-value> -a <appname>
+    heroku maintenance:off -a <appname>
 
 ## Bugs
 
