@@ -52,10 +52,10 @@ start reading the code.
 
    # Having confirmed that it succeeds...
    #  
-   # Rebind all config variables that had the SHARED_DATABASE_URL to the new DEV_PLAN_URL.
-   heroku config:add -a <appname>
-
-   # heroku config:remove SHARED_DATABASE_URL -a <appname>
+   # Rebind all config variables that had the SHARED_DATABASE_URL to
+   # the new DEV_PLAN_URL.  SHARED_DATABASE_URL will also be rebound
+   # to the dev addon.
+   heroku config:add <...> -a <appname>
 
    # Now that everything is reconfigured, bring the app back up
    heroku scale <all-process-types>=<original-value> -a <appname>
