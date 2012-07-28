@@ -8,23 +8,56 @@ class Heroku::Command::Pg < Heroku::Command::Base
   #
   # Migrate from legacy shared databases to Heroku Postgres Dev
   def migrate
-    to_perform = []
-    rollbacks = []
 
+    config_var_val = nil
+
+    action("Installing heroku-postgresql:dev") {
+      addon = api.post_addon(app, 'heroku-postgresql:dev')
+
+      # Parse out the bound variable name
+      add_msg = addon.body["message"]
+      add_msg =~ /^Attached as (HEROKU_POSTGRESQL_[A-Z]+)$/
+      config_var_name = $1
+      status("attached as #{config_var_name}")
+      config_var_val = api.get_config_vars(app).body[config_var_name]
+    }
+
+    #dev_provision = Heroku::PgMigrate::DevProvision.new(api, app)
     maintenance = Heroku::PgMigrate::Maintenance.new(api, app)
-    scale_zero! = Heroku::PgMigrate::ScaleZero.new(api, app)
+    scale_zero = Heroku::PgMigrate::ScaleZero.new(api, app)
+    rebind = Heroku::PgMigrate::RebindConfig.new(api, app, config_var_val)
 
+    to_perform = []
     # In reverse order of performance, as to_perform is a stack.
-    to_perform << scale_zero!
+    to_perform << rebind
+    to_perform << scale_zero
     to_perform << maintenance
 
+    rollbacks = []
     # Always want to rollback some xacts.
     rollbacks << maintenance
-    rollbacks << scale_zero!
+    rollbacks << scale_zero
 
+    Heroku::PgMigrate::MultiPhase.new(to_perform, rollbacks).engage
+  end
+end
+
+module Heroku::PgMigrate
+end
+
+module Heroku::PgMigrate::NeedRollback
+end
+
+class Heroku::PgMigrate::MultiPhase
+  def initialize(to_perform, rollbacks)
+    @to_perform = to_perform
+    @rollbacks = rollbacks
+  end
+
+  def engage
     begin
       loop do
-        xact = to_perform.pop()
+        xact = @to_perform.pop()
 
         # Finished all xacts without a problem
         break if xact.nil?
@@ -32,19 +65,19 @@ class Heroku::Command::Pg < Heroku::Command::Base
         begin
           additional = xact.perform!
         rescue Heroku::PgMigrate::NeedRollback => error
-          rollbacks.push(xact)
+          @rollbacks.push(xact)
           raise
         end
 
-        to_perform.concat(additional)
+        @to_perform.concat(additional)
       end
     ensure
       # Regardless, rollbacks need a chance to execute
-      process_rollbacks(rollbacks)
+      self.class.process_rollbacks(@rollbacks)
     end
   end
 
-  def process_rollbacks(rollbacks)
+  def self.process_rollbacks(rollbacks)
     # Rollbacks are intended to be idempotent (as they may get run
     # one or more times unless someone completely kills the program)
     # and we'd *really* prefer them run until they are successful,
@@ -60,19 +93,12 @@ class Heroku::Command::Pg < Heroku::Command::Base
       end
     end
   end
-
-end
-
-module Heroku::PgMigrate
-end
-
-module Heroku::PgMigrate::NeedRollback
 end
 
 class Heroku::PgMigrate::Maintenance
   include Heroku::Helpers
 
-  def initialize api, app
+  def initialize(api, app)
     @api = api
     @app = app
   end
@@ -83,11 +109,9 @@ class Heroku::PgMigrate::Maintenance
       begin
         @api.post_app_maintenance(@app, '1')
       rescue
-        error.extend(NeedRollback)
+        error.extend(Heroku::PgMigrate::NeedRollback)
         raise
       end
-
-      status("success")
     }
 
     return []
@@ -96,7 +120,6 @@ class Heroku::PgMigrate::Maintenance
   def rollback!
     action("Leaving maintenance mode on application #{@app}") {
       @api.post_app_maintenance(@app, '0')
-      status("success")
     }
   end
 end
@@ -124,7 +147,7 @@ class Heroku::PgMigrate::ScaleZero
       # If something goes wrong, signal caller to try to rollback by
       # tagging the error -- it's presumed one or more processes
       # have been scaled to zero.
-      error.extend(NeedRollback)
+      error.extend(Heroku::PgMigrate::NeedRollback)
       raise
     end
 
@@ -133,16 +156,14 @@ class Heroku::PgMigrate::ScaleZero
 
   def rollback!
     if @old_counts == nil
-      raise "Internal error: attempt to restore process scale when " +
-        "process scale-down could not be performed successfully."
-    end
-
-    @old_counts.each { |name, amount|
-      action("Restoring process #{name} scale to #{amount}") {
-        @api.post_ps_scale(app, name, amount.to_s).body
-        status('success')
+      # Must be true iff processes were never scaled down.
+    else
+      @old_counts.each { |name, amount|
+        action("Restoring process #{name} scale to #{amount}") {
+          @api.post_ps_scale(app, name, amount.to_s).body
+        }
       }
-    }
+    end
   end
 
   #
@@ -173,22 +194,26 @@ class Heroku::PgMigrate::ScaleZero
 
   def scale_zero! names
     # Scale every process contained in the sequence 'names' to zero.
-    names.each { |name|
-      action("Scaling process ${name} to 0") {
-        @api.post_ps_scale(@app, name, '0')
-        status('success')
+    if names.empty?
+      hputs("No active processes to scale down, skipping")
+    else
+      names.each { |name|
+        action("Scaling process #{name} to 0") {
+          @api.post_ps_scale(@app, name, '0')
+        }
       }
-    }
+    end
 
-    nil
+    return nil
   end
 end
 
 class Heroku::PgMigrate::RebindConfig
   include Heroku::Helpers
 
-  def initialize api, new
+  def initialize api, app, new
     @api = api
+    @app = app
     @new = new
     @old = nil
     @rebinding = nil
@@ -196,7 +221,7 @@ class Heroku::PgMigrate::RebindConfig
 
   def perform!
     # Save vars in case of rollback scenario.
-    @api.get_config_vars(app).body
+    vars = @api.get_config_vars(@app).body
 
     # Find and confirm the SHARED_DATABASE_URL's existence
     @old = vars['SHARED_DATABASE_URL']
@@ -215,14 +240,12 @@ class Heroku::PgMigrate::RebindConfig
       @rebinding = rebinding
 
       begin
-        self.class.rebind(@api, app, rebinding, @new)
+        self.class.rebind(@api, @app, rebinding, @new)
       rescue StandardError => error
         # If this fails, rollback is necessary
-        error.extend(NeedRollback)
+        error.extend(Heroku::PgMigrate::NeedRollback)
         raise
       end
-
-      status('success')
     }
 
     return []
@@ -238,40 +261,56 @@ class Heroku::PgMigrate::RebindConfig
       action("Binding old database configuration to: " +
         "#{self.class.humanize(@rebinding)}") {
         rebind(@api, app, @rebinding, @old)
-        status('success')
       }
-    end
-
-
-    #
-    # Helper procedures
-    #
-
-    def self.find_rebindings(vars, val)
-      # Yield each configuration variable with a given value.
-      rebinding = []
-      vars.each { |name, val|
-        if val == @old
-          rebinding << name
-        end
-      }
-
-      return rebinding
-    end
-
-    def self.rebind(api, app, names, val)
-      # Rebind every configuration in 'names' to 'val'
-      exploded_bindings = {}
-      names.each { |name|
-        exploded_bindings[name] = val
-      }
-
-      api.put_config_vars(app, exploded_bindings)
-    end
-
-    def self.humanize(names)
-      # How a list of rebound configuration names are to be rendered
-      names.join(', ')
     end
   end
+
+
+  #
+  # Helper procedures
+  #
+
+  def self.find_rebindings(vars, old)
+    # Yield each configuration variable with a given value.
+    rebinding = []
+    vars.each { |name, val|
+      if val == old
+        rebinding << name
+      end
+    }
+
+    return rebinding
+  end
+
+  def self.rebind(api, app, names, val)
+    # Rebind every configuration in 'names' to 'val'
+    exploded_bindings = {}
+    names.each { |name|
+      exploded_bindings[name] = val
+    }
+
+    api.put_config_vars(app, exploded_bindings)
+  end
+
+  def self.humanize(names)
+    # How a list of rebound configuration names are to be rendered
+    names.join(', ')
+  end
+end
+
+class Heroku::PgMigrate::DevProvision
+  include Heroku::Helpers
+
+  def initialize(api, app)
+    @api = api
+    @app = app
+  end
+
+  def perform!
+    return []
+  end
+
+  def rollback!
+  end
+
 end
