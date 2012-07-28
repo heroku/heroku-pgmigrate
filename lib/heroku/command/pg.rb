@@ -12,15 +12,15 @@ class Heroku::Command::Pg < Heroku::Command::Base
     rollbacks = []
 
     maintenance = Heroku::PgMigrate::Maintenance.new(api, app)
-    scale_zero = Heroku::PgMigrate::ScaleZero.new(api, app)
+    scale_zero! = Heroku::PgMigrate::ScaleZero.new(api, app)
 
     # In reverse order of performance, as to_perform is a stack.
-    to_perform << scale_zero
+    to_perform << scale_zero!
     to_perform << maintenance
 
     # Always want to rollback some xacts.
     rollbacks << maintenance
-    rollbacks << scale_zero
+    rollbacks << scale_zero!
 
     begin
       loop do
@@ -117,7 +117,9 @@ class Heroku::PgMigrate::ScaleZero
 
     begin
       # Perform the actual de-scaling
-      scale_zero(@old_counts.keys)
+      #
+      # TODO: special case handling of "run" type processes
+      scale_zero!(@old_counts.keys)
     rescue StandardError => error
       # If something goes wrong, signal caller to try to rollback by
       # tagging the error -- it's presumed one or more processes
@@ -169,7 +171,7 @@ class Heroku::PgMigrate::ScaleZero
     return old_counts
   end
 
-  def scale_zero names
+  def scale_zero! names
     # Scale every process contained in the sequence 'names' to zero.
     names.each { |name|
       action("Scaling process ${name} to 0") {
