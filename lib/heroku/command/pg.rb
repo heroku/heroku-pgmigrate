@@ -1,3 +1,5 @@
+require 'thread'
+
 require "heroku/command/base"
 
 class Heroku::Command::Pg < Heroku::Command::Base
@@ -22,23 +24,15 @@ class Heroku::Command::Pg < Heroku::Command::Base
       config_var_val = api.get_config_vars(app).body[config_var_name]
     }
 
-    #dev_provision = Heroku::PgMigrate::DevProvision.new(api, app)
     maintenance = Heroku::PgMigrate::Maintenance.new(api, app)
     scale_zero = Heroku::PgMigrate::ScaleZero.new(api, app)
     rebind = Heroku::PgMigrate::RebindConfig.new(api, app, config_var_val)
 
-    to_perform = []
-    # In reverse order of performance, as to_perform is a stack.
-    to_perform << rebind
-    to_perform << scale_zero
-    to_perform << maintenance
-
-    rollbacks = []
-    # Always want to rollback some xacts.
-    rollbacks << maintenance
-    rollbacks << scale_zero
-
-    Heroku::PgMigrate::MultiPhase.new(to_perform, rollbacks).engage
+    mp = Heroku::PgMigrate::MultiPhase.new()
+    mp.enqueue(maintenance)
+    mp.enqueue(scale_zero)
+    mp.enqueue(rebind)
+    mp.engage()
   end
 end
 
@@ -48,28 +42,46 @@ end
 module Heroku::PgMigrate::NeedRollback
 end
 
+module Heroku::PgMigrate
+  XactEmit = Struct.new(:more_actions, :more_rollbacks, :feed_forward)
+end
+
 class Heroku::PgMigrate::MultiPhase
-  def initialize(to_perform, rollbacks)
-    @to_perform = to_perform
-    @rollbacks = rollbacks
+  def initialize()
+    @to_perform = Queue.new
+    @rollbacks = []
+  end
+
+  def enqueue(xact)
+    @to_perform.enq(xact)
   end
 
   def engage
     begin
+      feed_forward = {}
       loop do
-        xact = @to_perform.pop()
+        xact = @to_perform.deq()
 
         # Finished all xacts without a problem
         break if xact.nil?
 
+        emit = nil
+
         begin
-          additional = xact.perform!
+          emit = xact.perform!(feed_forward)
         rescue Heroku::PgMigrate::NeedRollback => error
           @rollbacks.push(xact)
           raise
         end
 
-        @to_perform.concat(additional)
+        emit.more_actions.each { |nx|
+          @to_perform.enq(nx)
+        }
+
+        @rollbacks.concat(emit.more_rollbacks)
+        if emit.feed_forward != nil
+          feed_forward[xact] = emit.feed_forward
+        end
       end
     ensure
       # Regardless, rollbacks need a chance to execute
@@ -87,7 +99,12 @@ class Heroku::PgMigrate::MultiPhase
       break if xact.nil?
 
       begin
-        xact.rollback!
+        # Some actions have no sensible rollback, but this conditional
+        # allows them to avoid writing noop rollback! methods all the
+        # time.
+        if xact.respond_to?(:rollback!)
+          xact.rollback!
+        end
       rescue
         puts $!.to_s
       end
@@ -103,7 +120,7 @@ class Heroku::PgMigrate::Maintenance
     @app = app
   end
 
-  def perform!
+  def perform!(ff)
     action("Entering maintenance mode on application #{@app}") {
 
       begin
@@ -114,7 +131,7 @@ class Heroku::PgMigrate::Maintenance
       end
     }
 
-    return []
+    return Heroku::PgMigrate::XactEmit.new([], [self], nil)
   end
 
   def rollback!
@@ -132,7 +149,7 @@ class Heroku::PgMigrate::ScaleZero
     @app = app
   end
 
-  def perform!
+  def perform!(ff)
     @old_counts = nil
 
     # Remember the previous scaling for rollback.  Can fail.
@@ -151,7 +168,7 @@ class Heroku::PgMigrate::ScaleZero
       raise
     end
 
-    return []
+    return Heroku::PgMigrate::XactEmit.new([], [self], nil)
   end
 
   def rollback!
@@ -160,7 +177,7 @@ class Heroku::PgMigrate::ScaleZero
     else
       @old_counts.each { |name, amount|
         action("Restoring process #{name} scale to #{amount}") {
-          @api.post_ps_scale(app, name, amount.to_s).body
+          @api.post_ps_scale(@app, name, amount.to_s).body
         }
       }
     end
@@ -219,7 +236,7 @@ class Heroku::PgMigrate::RebindConfig
     @rebinding = nil
   end
 
-  def perform!
+  def perform!(ff)
     # Save vars in case of rollback scenario.
     vars = @api.get_config_vars(@app).body
 
@@ -248,7 +265,7 @@ class Heroku::PgMigrate::RebindConfig
       end
     }
 
-    return []
+    return Heroku::PgMigrate::XactEmit.new([], [self], nil)
   end
 
   def rollback!
@@ -296,21 +313,4 @@ class Heroku::PgMigrate::RebindConfig
     # How a list of rebound configuration names are to be rendered
     names.join(', ')
   end
-end
-
-class Heroku::PgMigrate::DevProvision
-  include Heroku::Helpers
-
-  def initialize(api, app)
-    @api = api
-    @app = app
-  end
-
-  def perform!
-    return []
-  end
-
-  def rollback!
-  end
-
 end
