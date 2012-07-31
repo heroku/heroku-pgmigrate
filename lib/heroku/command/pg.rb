@@ -122,16 +122,16 @@ class Heroku::PgMigrate::Maintenance
 
   def perform!(ff)
     action("Entering maintenance mode on application #{@app}") {
-
-      begin
-        @api.post_app_maintenance(@app, '1')
-      rescue
-        error.extend(Heroku::PgMigrate::NeedRollback)
-        raise
-      end
+      @api.post_app_maintenance(@app, '1')
     }
 
+    # Always want to rollback, regardless of exceptions or their
+    # absence.  However, exceptions must be propagated as to
+    # interrupt continued execution.
     return Heroku::PgMigrate::XactEmit.new([], [self], nil)
+  rescue StandardException => error
+    error.extend(Heroku::PgMigrate::NeedRollback)
+    raise
   end
 
   def rollback!
@@ -155,20 +155,21 @@ class Heroku::PgMigrate::ScaleZero
     # Remember the previous scaling for rollback.  Can fail.
     @old_counts = self.class.process_count(@api, @app)
 
-    begin
-      # Perform the actual de-scaling
-      #
-      # TODO: special case handling of "run" type processes
-      scale_zero!(@old_counts.keys)
-    rescue StandardError => error
-      # If something goes wrong, signal caller to try to rollback by
-      # tagging the error -- it's presumed one or more processes
-      # have been scaled to zero.
-      error.extend(Heroku::PgMigrate::NeedRollback)
-      raise
-    end
+    # Perform the actual de-scaling
+    #
+    # TODO: special case handling of "run" type processes
+    scale_zero!(@old_counts.keys)
 
+    # Just to not forget to handle this case later.
+    hputs("WARNING: heroku run processes are not cancelled at this time")
+
+    # Always want to rollback, regardless of exceptions or their
+    # absence.  However, exceptions must be propagated as to
+    # interrupt continued execution.
     return Heroku::PgMigrate::XactEmit.new([], [self], nil)
+  rescue StandardException => error
+    error.extend(Heroku::PgMigrate::NeedRollback)
+    raise
   end
 
   def rollback!
