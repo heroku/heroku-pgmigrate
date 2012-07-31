@@ -243,21 +243,19 @@ class Heroku::PgMigrate::RebindConfig
 
   def perform!(ff)
     # Unpack information from provisioning step
-    rebind_target = ff.fetch(Heroku::PgMigrate::Provision)
-    env_var_value = rebind_target.fetch(:env_var_value)
-
-    # Save vars in case of rollback scenario.
-    vars = @api.get_config_vars(@app).body
+    pdata = ff.fetch(Heroku::PgMigrate::Provision)
+    config = pdata.config_var_snapshot
+    new_url = config.fetch(pdata.env_var_name)
 
     # Find and confirm the SHARED_DATABASE_URL's existence
-    @old = vars['SHARED_DATABASE_URL']
+    @old = config.fetch('SHARED_DATABASE_URL')
     if @old == nil
       raise Heroku::PgMigrate::CannotMigrate.new(
         "ERROR: No SHARED_DATABASE_URL found: cannot migrate. Aborting.")
     end
 
     # Compute all the configuration variables that need rebinding.
-    rebinding = self.class.find_rebindings(vars, @old)
+    rebinding = self.class.find_rebindings(config, @old)
 
     # Indicate what is about to be done
     action("Binding new database configuration to: " +
@@ -267,7 +265,7 @@ class Heroku::PgMigrate::RebindConfig
       @rebinding = rebinding
 
       begin
-        self.class.rebind(@api, @app, rebinding, env_var_value)
+        self.class.rebind(@api, @app, rebinding, new_url)
       rescue StandardError => error
         # If this fails, rollback is necessary
         error.extend(Heroku::PgMigrate::NeedRollback)
@@ -328,14 +326,16 @@ end
 class Heroku::PgMigrate::Provision
   include Heroku::Helpers
 
+  ForwardData = Struct.new(:env_var_name, :config_var_snapshot)
+
   def initialize(api, app)
     @api = api
     @app = app
   end
 
   def perform!(ff)
-    new_datval = nil
     config_var_name = nil
+    config_vars = nil
 
     action("Installing heroku-postgresql:dev") {
       addon = @api.post_addon(@app, 'heroku-postgresql:dev')
@@ -343,16 +343,14 @@ class Heroku::PgMigrate::Provision
       # Parse out the bound variable name
       add_msg = addon.body["message"]
       add_msg =~ /^Attached as (HEROKU_POSTGRESQL_[A-Z]+)$/
-      config_var_name = $1
-      status("attached as #{config_var_name}")
-      new_datval = @api.get_config_vars(@app).body[config_var_name]
+      addon_name = $1
+      status("attached as #{addon_name}")
+
+      config_var_name = addon_name + '_URL'
+      config_vars = @api.get_config_vars(@app).body
     }
 
-    forward = {
-      :env_var_name => config_var_name,
-      :env_var_value => new_datval
-    }
-
-    return Heroku::PgMigrate::XactEmit.new([], [], forward)
+    return Heroku::PgMigrate::XactEmit.new([], [],
+      ForwardData.new(config_var_name, config_vars))
   end
 end
