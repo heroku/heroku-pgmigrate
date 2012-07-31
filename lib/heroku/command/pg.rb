@@ -10,25 +10,13 @@ class Heroku::Command::Pg < Heroku::Command::Base
   #
   # Migrate from legacy shared databases to Heroku Postgres Dev
   def migrate
-
-    config_var_val = nil
-
-    action("Installing heroku-postgresql:dev") {
-      addon = api.post_addon(app, 'heroku-postgresql:dev')
-
-      # Parse out the bound variable name
-      add_msg = addon.body["message"]
-      add_msg =~ /^Attached as (HEROKU_POSTGRESQL_[A-Z]+)$/
-      config_var_name = $1
-      status("attached as #{config_var_name}")
-      config_var_val = api.get_config_vars(app).body[config_var_name]
-    }
-
     maintenance = Heroku::PgMigrate::Maintenance.new(api, app)
     scale_zero = Heroku::PgMigrate::ScaleZero.new(api, app)
-    rebind = Heroku::PgMigrate::RebindConfig.new(api, app, config_var_val)
+    rebind = Heroku::PgMigrate::RebindConfig.new(api, app)
+    provision = Heroku::PgMigrate::Provision.new(api, app)
 
     mp = Heroku::PgMigrate::MultiPhase.new()
+    mp.enqueue(provision)
     mp.enqueue(maintenance)
     mp.enqueue(scale_zero)
     mp.enqueue(rebind)
@@ -44,6 +32,9 @@ end
 
 module Heroku::PgMigrate
   XactEmit = Struct.new(:more_actions, :more_rollbacks, :feed_forward)
+end
+
+class Heroku::PgMigrate::CannotMigrate < RuntimeError
 end
 
 class Heroku::PgMigrate::MultiPhase
@@ -80,7 +71,14 @@ class Heroku::PgMigrate::MultiPhase
 
         @rollbacks.concat(emit.more_rollbacks)
         if emit.feed_forward != nil
-          feed_forward[xact] = emit.feed_forward
+          # Use the class value as a way to coordinate between
+          # different steps.
+          #
+          # In principle, though, the class is not required per se,
+          # one only neesd a value that multiple passes can know about
+          # before beginning execution yet is known to be unique among
+          # all actions in execution.
+          feed_forward[xact.class] = emit.feed_forward
         end
       end
     ensure
@@ -229,22 +227,26 @@ end
 class Heroku::PgMigrate::RebindConfig
   include Heroku::Helpers
 
-  def initialize api, app, new
+  def initialize(api, app)
     @api = api
     @app = app
-    @new = new
     @old = nil
     @rebinding = nil
   end
 
   def perform!(ff)
+    # Unpack information from provisioning step
+    rebind_target = ff.fetch(Heroku::PgMigrate::Provision)
+    env_var_value = rebind_target.fetch(:env_var_value)
+
     # Save vars in case of rollback scenario.
     vars = @api.get_config_vars(@app).body
 
     # Find and confirm the SHARED_DATABASE_URL's existence
     @old = vars['SHARED_DATABASE_URL']
     if @old == nil
-      raise "No SHARED_DATABASE_URL found: cannot migrate."
+      raise Heroku::PgMigrate::CannotMigrate.new(
+        "No SHARED_DATABASE_URL found: cannot migrate.")
     end
 
     # Compute all the configuration variables that need rebinding.
@@ -258,7 +260,7 @@ class Heroku::PgMigrate::RebindConfig
       @rebinding = rebinding
 
       begin
-        self.class.rebind(@api, @app, rebinding, @new)
+        self.class.rebind(@api, @app, rebinding, env_var_value)
       rescue StandardError => error
         # If this fails, rollback is necessary
         error.extend(Heroku::PgMigrate::NeedRollback)
@@ -266,7 +268,7 @@ class Heroku::PgMigrate::RebindConfig
       end
     }
 
-    return Heroku::PgMigrate::XactEmit.new([], [self], nil)
+    return Heroku::PgMigrate::XactEmit.new([], [], nil)
   end
 
   def rollback!
@@ -275,12 +277,12 @@ class Heroku::PgMigrate::RebindConfig
       # rollback state.
       raise "Internal error: rollback performed even though " +
         "this action should not require undoing."
+    end
 
       action("Binding old database configuration to: " +
         "#{self.class.humanize(@rebinding)}") {
         rebind(@api, app, @rebinding, @old)
       }
-    end
   end
 
 
@@ -313,5 +315,37 @@ class Heroku::PgMigrate::RebindConfig
   def self.humanize(names)
     # How a list of rebound configuration names are to be rendered
     names.join(', ')
+  end
+end
+
+class Heroku::PgMigrate::Provision
+  include Heroku::Helpers
+
+  def initialize(api, app)
+    @api = api
+    @app = app
+  end
+
+  def perform!(ff)
+    new_datval = nil
+    config_var_name = nil
+
+    action("Installing heroku-postgresql:dev") {
+      addon = @api.post_addon(@app, 'heroku-postgresql:dev')
+
+      # Parse out the bound variable name
+      add_msg = addon.body["message"]
+      add_msg =~ /^Attached as (HEROKU_POSTGRESQL_[A-Z]+)$/
+      config_var_name = $1
+      status("attached as #{config_var_name}")
+      new_datval = @api.get_config_vars(@app).body[config_var_name]
+    }
+
+    forward = {
+      :env_var_name => config_var_name,
+      :env_var_value => new_datval
+    }
+
+    return Heroku::PgMigrate::XactEmit.new([], [], forward)
   end
 end
