@@ -38,6 +38,8 @@ class Heroku::PgMigrate::CannotMigrate < RuntimeError
 end
 
 class Heroku::PgMigrate::MultiPhase
+  include Heroku::Helpers
+
   def initialize()
     @to_perform = Queue.new
     @rollbacks = []
@@ -63,6 +65,11 @@ class Heroku::PgMigrate::MultiPhase
         rescue Heroku::PgMigrate::NeedRollback => error
           @rollbacks.push(xact)
           raise
+        rescue Heroku::PgMigrate::CannotMigrate => error
+          # Just need to print the message, run the rollbacks --
+          # guarded by "ensure" -- and exit cleanly.
+          hputs(error.message)
+          return
         end
 
         emit.more_actions.each { |nx|
