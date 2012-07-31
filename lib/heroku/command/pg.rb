@@ -253,7 +253,7 @@ class Heroku::PgMigrate::RebindConfig
     @old = vars['SHARED_DATABASE_URL']
     if @old == nil
       raise Heroku::PgMigrate::CannotMigrate.new(
-        "No SHARED_DATABASE_URL found: cannot migrate.")
+        "ERROR: No SHARED_DATABASE_URL found: cannot migrate. Aborting.")
     end
 
     # Compute all the configuration variables that need rebinding.
