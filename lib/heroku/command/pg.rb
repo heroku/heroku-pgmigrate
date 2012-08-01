@@ -166,7 +166,7 @@ class Heroku::PgMigrate::ScaleZero
     scale_zero!(@old_counts.keys)
 
     # Just to not forget to handle this case later.
-    hputs("WARNING: heroku run processes are not cancelled at this time")
+    hputs("WARNING: 'heroku run' processes are not cancelled at this time")
 
     # Always want to rollback, regardless of exceptions or their
     # absence.  However, exceptions must be propagated as to
