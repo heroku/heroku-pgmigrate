@@ -134,7 +134,7 @@ class Heroku::PgMigrate::Maintenance
     # absence.  However, exceptions must be propagated as to
     # interrupt continued execution.
     return Heroku::PgMigrate::XactEmit.new([], [self], nil)
-  rescue StandardException => error
+  rescue Exception => error
     error.extend(Heroku::PgMigrate::NeedRollback)
     raise
   end
@@ -172,7 +172,7 @@ class Heroku::PgMigrate::ScaleZero
     # absence.  However, exceptions must be propagated as to
     # interrupt continued execution.
     return Heroku::PgMigrate::XactEmit.new([], [self], nil)
-  rescue StandardException => error
+  rescue Exception => error
     error.extend(Heroku::PgMigrate::NeedRollback)
     raise
   end
@@ -266,7 +266,7 @@ class Heroku::PgMigrate::RebindConfig
 
       begin
         self.class.rebind(@api, @app, rebinding, new_url)
-      rescue StandardError => error
+      rescue Exception => error
         # If this fails, rollback is necessary
         error.extend(Heroku::PgMigrate::NeedRollback)
         raise
