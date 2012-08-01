@@ -286,10 +286,10 @@ class Heroku::PgMigrate::RebindConfig
         "this action should not require undoing."
     end
 
-      action("Binding old database configuration to: " +
-        "#{self.class.humanize(@rebinding)}") {
-        rebind(@api, app, @rebinding, @old)
-      }
+    action("Binding old database configuration to: " +
+      "#{self.class.humanize(@rebinding)}") {
+      rebind(@api, @app, @rebinding, @old)
+    }
   end
 
 
