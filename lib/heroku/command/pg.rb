@@ -15,12 +15,14 @@ class Heroku::Command::Pg < Heroku::Command::Base
     rebind = Heroku::PgMigrate::RebindConfig.new(api, app)
     provision = Heroku::PgMigrate::Provision.new(api, app)
     foi_pgbackups = Heroku::PgMigrate::FindOrInstallPgBackups.new(api, app)
+    transfer = Heroku::PgMigrate::Transfer.new(api, app)
 
     mp = Heroku::PgMigrate::MultiPhase.new()
     mp.enqueue(foi_pgbackups)
     mp.enqueue(provision)
     mp.enqueue(maintenance)
     mp.enqueue(scale_zero)
+    mp.enqueue(transfer)
     mp.enqueue(rebind)
     mp.engage()
   end
@@ -396,5 +398,117 @@ class Heroku::PgMigrate::FindOrInstallPgBackups
     end
 
     return Heroku::PgMigrate::XactEmit.new([], [], nil)
+  end
+end
+
+class Heroku::PgMigrate::Transfer
+  include Heroku::Helpers
+
+  def initialize(api, app)
+    @api = api
+    @app = app
+  end
+
+  def perform!(ff)
+    pdata = ff.fetch(Heroku::PgMigrate::Provision)
+    config = pdata.config_var_snapshot
+    pgbackups_url = config.fetch('PGBACKUPS_URL')
+    from_url = config.fetch('SHARED_DATABASE_URL')
+    to_url = config.fetch(pdata.env_var_name)
+
+    pgbackups_client = Heroku::Client::Pgbackups.new(pgbackups_url)
+    renderer = Renderer.new
+
+    action("Transferring") {
+      backup = pgbackups_client.create_transfer(
+        from_url, "legacy-db", to_url, 'hpg-shared')
+      backup = renderer.poll_transfer!(pgbackups_client, backup)
+      if backup["error_at"]
+        raise Heroku::PgMigrate::CannotMigrate.new(
+          "ERROR: Transfer failed, aborting")
+      end
+    }
+
+    return Heroku::PgMigrate::XactEmit.new([], [], nil)
+  end
+
+  class Renderer
+    # A copy from heroku/command/pgbackups.rb for backup progress
+    # rendering, so it can be easily tweaked.
+    include Heroku::Helpers
+    include Heroku::Helpers::HerokuPostgresql
+
+    def poll_transfer!(pgbackups_client, transfer)
+      display "\n"
+
+      if transfer["errors"]
+        transfer["errors"].values.flatten.each { |e|
+          output_with_bang "#{e}"
+        }
+
+        raise Heroku::PgMigrate::CannotMigrate.new(
+          "ERROR: Transfer failed, aborting")
+      end
+
+      while true
+        update_display(transfer)
+        break if transfer["finished_at"]
+
+        sleep 1
+        transfer = pgbackups_client.get_transfer(transfer["id"])
+      end
+
+      display "\n"
+
+      return transfer
+    end
+
+    def update_display(transfer)
+      @ticks            ||= 0
+      @last_updated_at  ||= 0
+      @last_logs        ||= []
+      @last_progress    ||= ["", 0]
+
+      @ticks += 1
+
+      step_map = {
+        "dump"      => "Capturing",
+        "upload"    => "Storing",
+        "download"  => "Retrieving",
+        "restore"   => "Restoring",
+        "gunzip"    => "Uncompressing",
+        "load"      => "Restoring",
+      }
+
+      if !transfer["log"]
+        @last_progress = ['pending', nil]
+        redisplay "Pending... #{spinner(@ticks)}"
+      else
+        logs        = transfer["log"].split("\n")
+        new_logs    = logs - @last_logs
+        @last_logs  = logs
+
+        new_logs.each do |line|
+          matches = line.scan /^([a-z_]+)_progress:\s+([^ ]+)/
+          next if matches.empty?
+
+          step, amount = matches[0]
+
+          if ['done', 'error'].include? amount
+            # step is done, explicitly print result and newline
+            redisplay "#{@last_progress[0].capitalize}... #{amount}\n"
+          end
+
+          # store progress, last one in the logs will get displayed
+          step = step_map[step] || step
+          @last_progress = [step, amount]
+        end
+
+        step, amount = @last_progress
+        unless ['done', 'error'].include? amount
+          redisplay "#{step.capitalize}... #{amount} #{spinner(@ticks)}"
+        end
+      end
+    end
   end
 end
