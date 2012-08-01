@@ -14,8 +14,10 @@ class Heroku::Command::Pg < Heroku::Command::Base
     scale_zero = Heroku::PgMigrate::ScaleZero.new(api, app)
     rebind = Heroku::PgMigrate::RebindConfig.new(api, app)
     provision = Heroku::PgMigrate::Provision.new(api, app)
+    foi_pgbackups = Heroku::PgMigrate::FindOrInstallPgBackups.new(api, app)
 
     mp = Heroku::PgMigrate::MultiPhase.new()
+    mp.enqueue(foi_pgbackups)
     mp.enqueue(provision)
     mp.enqueue(maintenance)
     mp.enqueue(scale_zero)
@@ -352,5 +354,47 @@ class Heroku::PgMigrate::Provision
 
     return Heroku::PgMigrate::XactEmit.new([], [],
       ForwardData.new(config_var_name, config_vars))
+  end
+end
+
+class Heroku::PgMigrate::FindOrInstallPgBackups
+  include Heroku::Helpers
+
+  def initialize(api, app)
+    @api = api
+    @app = app
+  end
+
+  def perform!(ff)
+    added = nil
+
+    action("Checking for pgbackups addon") {
+      begin
+        addon = @api.post_addon(@app, 'pgbackups:plus')
+        status("not found")
+        added = true
+      rescue Heroku::API::Errors::RequestFailed => error
+        added = false
+        err_msg = error.response.body["error"]
+
+        if err_msg == "Add-on already installed" ||
+            (err_msg =~ /pgbackups:[a-z]+ add-on already added\./).nil?
+          status("already present")
+        else
+          raise
+        end
+      end
+    }
+
+    if added
+      # Actually already happened, since the addition/detection is
+      # done in one step, but write out some activity to show that
+      # this did happen.
+      action("Adding pgbackups") {
+        # no-op, but block must be passed
+      }
+    end
+
+    return Heroku::PgMigrate::XactEmit.new([], [], nil)
   end
 end
