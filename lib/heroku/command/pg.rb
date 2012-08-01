@@ -24,6 +24,7 @@ class Heroku::Command::Pg < Heroku::Command::Base
     mp.enqueue(scale_zero)
     mp.enqueue(transfer)
     mp.enqueue(rebind)
+
     mp.engage()
   end
 end
@@ -54,52 +55,57 @@ class Heroku::PgMigrate::MultiPhase
   end
 
   def engage
-    begin
-      feed_forward = {}
-      loop do
-        break if @to_perform.length == 0
-        xact = @to_perform.deq()
-
-        # Finished all xacts without a problem
-        break if xact.nil?
-
-        emit = nil
-
-        begin
-          emit = xact.perform!(feed_forward)
-        rescue Heroku::PgMigrate::NeedRollback => error
-          @rollbacks.push(xact)
-          raise
-        rescue Heroku::PgMigrate::CannotMigrate => error
-          # Just need to print the message, run the rollbacks --
-          # guarded by "ensure" -- and exit cleanly.
-          hputs(error.message)
-          return
-        end
-
-        emit.more_actions.each { |nx|
-          @to_perform.enq(nx)
-        }
-
-        @rollbacks.concat(emit.more_rollbacks)
-        if emit.feed_forward != nil
-          # Use the class value as a way to coordinate between
-          # different steps.
-          #
-          # In principle, though, the class is not required per se,
-          # one only neesd a value that multiple passes can know about
-          # before beginning execution yet is known to be unique among
-          # all actions in execution.
-          feed_forward[xact.class] = emit.feed_forward
-        end
-      end
-    ensure
-      # Regardless, rollbacks need a chance to execute
+    feed_forward = {}
+    at_exit {
       self.class.process_rollbacks(@rollbacks)
+    }
+
+    loop do
+      break if @to_perform.length == 0
+      xact = @to_perform.deq()
+
+      # Finished all xacts without a problem
+      break if xact.nil?
+
+      emit = nil
+
+      begin
+        emit = xact.perform!(feed_forward)
+      rescue Heroku::PgMigrate::NeedRollback => error
+        @rollbacks.push(xact)
+        raise
+      rescue Heroku::PgMigrate::CannotMigrate => error
+        # Just need to print the message, run the rollbacks --
+        # guarded by "ensure" -- and exit cleanly.
+        hputs(error.message)
+        return
+      end
+
+      emit.more_actions.each { |nx|
+        @to_perform.enq(nx)
+      }
+
+      @rollbacks.concat(emit.more_rollbacks)
+      if emit.feed_forward != nil
+        # Use the class value as a way to coordinate between
+        # different steps.
+        #
+        # In principle, though, the class is not required per se,
+        # one only neesd a value that multiple passes can know about
+        # before beginning execution yet is known to be unique among
+        # all actions in execution.
+        feed_forward[xact.class] = emit.feed_forward
+      end
     end
   end
 
   def self.process_rollbacks(rollbacks)
+    # Disabling SIGINT handling during rollback to prevent
+    # double-cancels from re-raising exceptions the trap set in
+    # "engage".
+    trap(:INT) do
+    end
+
     # Rollbacks are intended to be idempotent (as they may get run
     # one or more times unless someone completely kills the program)
     # and we'd *really* prefer them run until they are successful,
