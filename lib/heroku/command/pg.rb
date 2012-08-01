@@ -16,8 +16,10 @@ class Heroku::Command::Pg < Heroku::Command::Base
     provision = Heroku::PgMigrate::Provision.new(api, app)
     foi_pgbackups = Heroku::PgMigrate::FindOrInstallPgBackups.new(api, app)
     transfer = Heroku::PgMigrate::Transfer.new(api, app)
+    check_shared = Heroku::PgMigrate::CheckShared.new(api, app)
 
     mp = Heroku::PgMigrate::MultiPhase.new()
+    mp.enqueue(check_shared)
     mp.enqueue(foi_pgbackups)
     mp.enqueue(provision)
     mp.enqueue(maintenance)
@@ -258,12 +260,10 @@ class Heroku::PgMigrate::RebindConfig
     config = pdata.config_var_snapshot
     new_url = config.fetch(pdata.env_var_name)
 
-    # Find and confirm the SHARED_DATABASE_URL's existence
+    # Find and confirm the SHARED_DATABASE_URL's existence.  It should
+    # have already been verified by the step that grabbed the config
+    # snapshot.
     @old = config.fetch('SHARED_DATABASE_URL')
-    if @old == nil
-      raise Heroku::PgMigrate::CannotMigrate.new(
-        "ERROR: No SHARED_DATABASE_URL found: cannot migrate. Aborting.")
-    end
 
     # Compute all the configuration variables that need rebinding.
     rebinding = self.class.find_rebindings(config, @old)
@@ -359,6 +359,14 @@ class Heroku::PgMigrate::Provision
 
       config_var_name = addon_name + '_URL'
       config_vars = @api.get_config_vars(@app).body
+
+      # Just in case there is a race where SHARED_DATABASE_URL is
+      # removed between the initial check and this snapshot that is
+      # propagated to other parts of this program.  If there is no
+      # SHARED_DATABASE_URL then a CannotMigrate exception will be
+      # raised.
+      recheck = Heroku::PgMigrate::CheckShared.new(@api, @app)
+      recheck.perform!({})
     }
 
     return Heroku::PgMigrate::XactEmit.new([], [],
@@ -518,4 +526,22 @@ class Heroku::PgMigrate::Transfer
       end
     end
   end
+end
+
+class Heroku::PgMigrate::CheckShared
+  def initialize(api, app)
+    @api = api
+    @app = app
+  end
+
+  def perform!(ff)
+    sdb = @api.get_config_vars(@app).body['SHARED_DATABASE_URL']
+    if sdb.nil?
+      raise Heroku::PgMigrate::CannotMigrate.new(
+        "No SHARED_DATABASE_URL bound, aborting migration")
+    end
+
+    return Heroku::PgMigrate::XactEmit.new([], [], nil)
+  end
+
 end
