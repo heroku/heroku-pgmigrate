@@ -57,6 +57,7 @@ class Heroku::PgMigrate::MultiPhase
     begin
       feed_forward = {}
       loop do
+        break if @to_perform.length == 0
         xact = @to_perform.deq()
 
         # Finished all xacts without a problem
