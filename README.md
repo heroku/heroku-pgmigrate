@@ -47,8 +47,8 @@ The general process used internally by the software is as follows:
 
 ## Bugs
 
-pg:migrate is not safe to use under concurrent access (multiple users
-at the same time).  In event of an abort, it may be necessary to
+`pg:migrate` is not safe to use under concurrent access (multiple
+users at the same time).  In event of an abort, it may be necessary to
 determine:
 
   * If one wishes to roll back the attempt to migrate and try again,
