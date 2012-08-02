@@ -47,6 +47,10 @@ The general process used internally by the software is as follows:
 
 ## Bugs
 
+`pg:migrate` can be dangerous if one has moved, duplicated, or
+overwritten their SHARED_DATABASE_URL configuration, including both
+within one application and between multiple applications.
+
 `pg:migrate` is not safe to use under concurrent access (multiple
 users at the same time).  In event of an abort, it may be necessary to
 determine:
