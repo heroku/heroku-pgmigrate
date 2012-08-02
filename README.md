@@ -38,6 +38,9 @@ they are nominally carried out entirely automatically.  They are here
 for reference in case one encounters a problem or wants a position to
 start reading the code.
 
+    # Add a pgbackups:plus plan, if no pgbackups plan is found at all
+    heroku addons:add pgbackups:plus -a <appname>
+
     # Create a Dev plan as a target to do a pgbackups restore into
     heroku addons:add heroku-postgresql:dev -a <appname>
 
@@ -60,10 +63,6 @@ start reading the code.
     # Now that everything is reconfigured, bring the app back up
     heroku scale <all-process-types>=<original-value> -a <appname>
     heroku maintenance:off -a <appname>
-
-## Bugs
-
-* No cancellation or rollback support.
 
 ## THIS IS BETA SOFTWARE
 
