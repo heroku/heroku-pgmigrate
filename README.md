@@ -13,30 +13,10 @@ In short: `heroku pg:migrate --app your_app`
 
 This command will move from the legacy Shared Database plans to the
 newer Heroku Postgres Dev plans.  This is done using a series of API
-calls that have been available for some time. 
+calls that have been available for some time, and a few new ones made
+to this purpose.
 
-It is not safe to use under concurrent access (multiple users at the
-same time).  In event of an abort, it may be necessary to determine:
-
-  * If the database was properly restored into its destination
-
-  * If one wishes to use the new database or old database URL
-
-  * If one needs to rebind any config variables, should config var
-    rewriting have only half-completed.
-
-  * If one wishes to turn off maintenance mode and scale processes
-    back to their original level, after assessing that all config vars
-    are in the correct state.
-
-  * If one wishes to roll back the attempt to migrate and try again,
-    whether one should delete the target dev-plan database, as
-    migrations are safest to completely empty database.
-
-The general process used internally by the software is this, however,
-they are nominally carried out entirely automatically.  They are here
-for reference in case one encounters a problem or wants a position to
-start reading the code.
+The general process used internally by the software is as follows:
 
     # Add a pgbackups:plus plan, if no pgbackups plan is found at all
     heroku addons:add pgbackups:plus -a <appname>
@@ -50,7 +30,8 @@ start reading the code.
     # Scale all processes to zero
     heroku scale <all-process-types>=0 -a <appname>
 
-    # Copy the database
+    # Copy the database (this API is not currently exposed via command
+    # line)
     heroku pgbackups:transfer <SHARED_DATABASE_URL> <DEV_PLAN_URL> -a <appname>
 
     # Having confirmed that it succeeds...
@@ -63,6 +44,28 @@ start reading the code.
     # Now that everything is reconfigured, bring the app back up
     heroku scale <all-process-types>=<original-value> -a <appname>
     heroku maintenance:off -a <appname>
+
+## Bugs
+
+pg:migrate is not safe to use under concurrent access (multiple users
+at the same time).  In event of an abort, it may be necessary to
+determine:
+
+  * If one wishes to roll back the attempt to migrate and try again,
+    whether one should delete the target dev-plan database, as
+    migrations are safest to completely empty database.
+
+  * If the database was properly restored into its destination
+
+  * If one wishes to use the new database or old database URL
+
+  * If one needs to rebind any config variables, should config var
+    rewriting have only half-completed.
+
+  * If one wishes to turn off maintenance mode and scale processes
+    back to their original level, after assessing that all config vars
+    are in the correct state.
+
 
 ## THIS IS BETA SOFTWARE
 
