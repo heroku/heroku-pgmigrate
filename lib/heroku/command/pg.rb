@@ -83,20 +83,25 @@ class Heroku::PgMigrate::MultiPhase
         return
       end
 
-      emit.more_actions.each { |nx|
-        @to_perform.enq(nx)
-      }
+      # Many actions do not need to set up any rollbacks and do not
+      # have any state to feed forward, so ease the burden on those by
+      # allowing them to return nil to mean "do nothing".
+      if emit != nil
+        emit.more_actions.each { |nx|
+          @to_perform.enq(nx)
+        }
 
-      @rollbacks.concat(emit.more_rollbacks)
-      if emit.feed_forward != nil
-        # Use the class value as a way to coordinate between
-        # different steps.
-        #
-        # In principle, though, the class is not required per se,
-        # one only neesd a value that multiple passes can know about
-        # before beginning execution yet is known to be unique among
-        # all actions in execution.
-        feed_forward[xact.class] = emit.feed_forward
+        @rollbacks.concat(emit.more_rollbacks)
+        if emit.feed_forward != nil
+          # Use the class value as a way to coordinate between
+          # different steps.
+          #
+          # In principle, though, the class is not required per se,
+          # one only neesd a value that multiple passes can know about
+          # before beginning execution yet is known to be unique among
+          # all actions in execution.
+          feed_forward[xact.class] = emit.feed_forward
+        end
       end
     end
   end
@@ -287,7 +292,7 @@ class Heroku::PgMigrate::RebindConfig
       end
     }
 
-    return Heroku::PgMigrate::XactEmit.new([], [], nil)
+    return nil
   end
 
   def rollback!
@@ -415,7 +420,7 @@ class Heroku::PgMigrate::FindOrInstallPgBackups
       }
     end
 
-    return Heroku::PgMigrate::XactEmit.new([], [], nil)
+    return nil
   end
 end
 
@@ -447,7 +452,7 @@ class Heroku::PgMigrate::Transfer
       end
     }
 
-    return Heroku::PgMigrate::XactEmit.new([], [], nil)
+    return nil
   end
 
   class Renderer
@@ -560,7 +565,7 @@ class Heroku::PgMigrate::CheckShared
         'SHARED_DATABASE_URL is already bound to a heroku-postgresql plan.')
     end
 
-    return Heroku::PgMigrate::XactEmit.new([], [], nil)
+    return nil
   end
 
 end
