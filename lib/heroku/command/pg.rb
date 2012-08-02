@@ -529,16 +529,32 @@ class Heroku::PgMigrate::Transfer
 end
 
 class Heroku::PgMigrate::CheckShared
+  include Heroku::Helpers
+
   def initialize(api, app)
     @api = api
     @app = app
   end
 
   def perform!(ff)
-    sdb = @api.get_config_vars(@app).body['SHARED_DATABASE_URL']
+    addons = @api.get_addons(@app).body
+    config_vars = @api.get_config_vars(@app).body
+
+    attach_vals = addons.select { |addon|
+      addon['name'].start_with?('heroku-postgresql:')
+    }.map { |addon|
+      addon['attachment_name']
+    }.map { |attach_name|
+      config_vars[attach_name + '_URL']
+    }
+
+    sdb = config_vars['SHARED_DATABASE_URL']
     if sdb.nil?
       raise Heroku::PgMigrate::CannotMigrate.new(
-        "No SHARED_DATABASE_URL bound, aborting migration")
+        'SHARED_DATABASE_URL unbound, aborting migration.')
+    elsif attach_vals.include?(sdb)
+      raise Heroku::PgMigrate::CannotMigrate.new(
+        'SHARED_DATABASE_URL is already bound to a heroku-postgresql plan.')
     end
 
     return Heroku::PgMigrate::XactEmit.new([], [], nil)
