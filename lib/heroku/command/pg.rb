@@ -173,13 +173,16 @@ class Heroku::PgMigrate::ScaleZero
     # Remember the previous scaling for rollback.  Can fail.
     @old_counts = self.class.process_count(@api, @app)
 
+    if @old_counts.keys.include?('run')
+      raise Heroku::PgMigrate::CannotMigrate.new(
+        'ERROR: "heroku run" processes detected, wait for these to complete ' +
+        'or ps:stop them to perform the migration')
+    end
+
     # Perform the actual de-scaling
     #
     # TODO: special case handling of "run" type processes
     scale_zero!(@old_counts.keys)
-
-    # Just to not forget to handle this case later.
-    hputs("WARNING: 'heroku run' processes are not cancelled at this time")
 
     # Always want to rollback, regardless of exceptions or their
     # absence.  However, exceptions must be propagated as to
