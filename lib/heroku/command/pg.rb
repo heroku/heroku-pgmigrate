@@ -297,7 +297,7 @@ class Heroku::PgMigrate::RebindConfig
 
     action("Binding old database configuration to: " +
       "#{self.class.humanize(@rebinding)}") {
-      rebind(@api, @app, @rebinding, @old)
+      self.class.rebind(@api, @app, @rebinding, @old)
     }
   end
 
