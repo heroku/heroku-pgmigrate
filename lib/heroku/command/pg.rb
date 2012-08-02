@@ -440,7 +440,7 @@ class Heroku::PgMigrate::Transfer
       backup = renderer.poll_transfer!(pgbackups_client, backup)
       if backup["error_at"]
         raise Heroku::PgMigrate::CannotMigrate.new(
-          "ERROR: Transfer failed, aborting")
+          "ERROR: Transfer failed, aborting.")
       end
     }
 
@@ -462,7 +462,7 @@ class Heroku::PgMigrate::Transfer
         }
 
         raise Heroku::PgMigrate::CannotMigrate.new(
-          "ERROR: Transfer failed, aborting")
+          "ERROR: Transfer failed, aborting.")
       end
 
       while true
