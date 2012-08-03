@@ -180,7 +180,7 @@ class Heroku::PgMigrate::Maintenance
   end
 
   def rollback!
-    action("Leaving maintenance mode on application #{@app}") {
+    action("Leaving maintenance mode for application #{@app}") {
       @api.post_app_maintenance(@app, '0')
     }
   end
