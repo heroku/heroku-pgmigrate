@@ -17,8 +17,10 @@ class Heroku::Command::Pg < Heroku::Command::Base
     foi_pgbackups = Heroku::PgMigrate::FindOrInstallPgBackups.new(api, app)
     transfer = Heroku::PgMigrate::Transfer.new(api, app)
     check_shared = Heroku::PgMigrate::CheckShared.new(api, app)
+    release_num = Heroku::PgMigrate::ReleaseNumber.new(api, app)
 
     mp = Heroku::PgMigrate::MultiPhase.new()
+    mp.enqueue(release_num)
     mp.enqueue(check_shared)
     mp.enqueue(foi_pgbackups)
     mp.enqueue(provision)
@@ -50,6 +52,7 @@ class Heroku::PgMigrate::MultiPhase
   def initialize()
     @to_perform = Queue.new
     @rollbacks = []
+    @success = false
   end
 
   def enqueue(xact)
@@ -60,6 +63,22 @@ class Heroku::PgMigrate::MultiPhase
     feed_forward = {}
     at_exit {
       self.class.process_rollbacks(@rollbacks)
+
+      if @success
+        rd = feed_forward[Heroku::PgMigrate::ReleaseNumber]
+        if rd.nil?
+          return
+        end
+
+        display('Migration completed successfully.')
+
+        display(
+          "Please check your application #{rd.app}.  " +
+          "If everything appears to be working, " +
+          "remove your shared database with addons:remove.  " +
+          "If things are not working, use 'heroku rollback " +
+          "#{rd.name}'.")
+      end
     }
 
     loop do
@@ -104,6 +123,9 @@ class Heroku::PgMigrate::MultiPhase
         end
       end
     end
+
+    @success = true
+    return feed_forward
   end
 
   def self.process_rollbacks(rollbacks)
@@ -568,4 +590,20 @@ class Heroku::PgMigrate::CheckShared
     return nil
   end
 
+end
+
+class Heroku::PgMigrate::ReleaseNumber
+
+  ReleaseData = Struct.new(:app, :name)
+
+  def initialize(api, app)
+    @api = api
+    @app = app
+  end
+
+  def perform!(ff)
+    return Heroku::PgMigrate::XactEmit.new([], [],
+      ReleaseData.new(@app,
+        @api.get_release(@app, 'current').body.fetch('name')))
+  end
 end
