@@ -20,10 +20,10 @@ class Heroku::Command::Pg < Heroku::Command::Base
     release_num = Heroku::PgMigrate::ReleaseNumber.new(api, app)
 
     mp = Heroku::PgMigrate::MultiPhase.new()
-    mp.enqueue(release_num)
     mp.enqueue(check_shared)
     mp.enqueue(foi_pgbackups)
     mp.enqueue(provision)
+    mp.enqueue(release_num)
     mp.enqueue(maintenance)
     mp.enqueue(scale_zero)
     mp.enqueue(transfer)
