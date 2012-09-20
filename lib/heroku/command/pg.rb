@@ -383,7 +383,7 @@ class Heroku::PgMigrate::Provision
 
       # Parse out the bound variable name
       add_msg = addon.body["message"]
-      add_msg =~ /^Attached as (HEROKU_POSTGRESQL_[A-Z]+)$/
+      add_msg =~ /^Attached as (HEROKU_POSTGRESQL_[A-Z]+)(?:_URL)?$/
       addon_name = $1
       status("attached as #{addon_name}")
 
